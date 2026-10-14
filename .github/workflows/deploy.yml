@@ -1,3 +1,4 @@
+
 name: Deploy InvoiceLite to GitHub Pages
 
 on:
@@ -26,14 +27,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
           cache: npm
 
       - name: Install dependencies
-        run: npm install
-
-      - name: Run unit tests
-        run: npm test
+        run: npm ci
 
       - name: Build application
         run: npm run build
@@ -41,7 +39,7 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Upload website artifact
+      - name: Upload build artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
