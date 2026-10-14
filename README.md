@@ -4,7 +4,8 @@
 A clean, lightweight, open-source invoice generator built with React, TypeScript, Vite, and Tailwind CSS.
 
 Create professional invoices, manage clients, calculate totals, preview your documents, and export invoices without creating an account or sending your data to a server.
-
+## Stack Used:
+[![My Skills](https://skillicons.dev/icons?i=react,ts,vite,tailwind,html,css,github)](https://skillicons.dev)
 ## Features
 
 - Create, edit, duplicate, and delete invoices
