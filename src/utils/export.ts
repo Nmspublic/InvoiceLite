@@ -6,30 +6,21 @@ import { calculateTotals, calculateItemTotal } from "./calculations";
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
-
   link.href = url;
   link.download = filename;
-  link.style.display = "none";
-
   document.body.appendChild(link);
   link.click();
   link.remove();
-
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function safeFilename(value: string): string {
-  return (
-    value.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").slice(0, 80) ||
-    "invoice"
-  );
+  return value.replace(/[^a-z0-9_-]/gi, "-").slice(0, 80) || "invoice";
 }
 
 function pdfDate(value: string): string {
   if (!value) return "—";
-
   const date = new Date(`${value}T12:00:00`);
-
   if (Number.isNaN(date.getTime())) return "—";
 
   return new Intl.DateTimeFormat("en-IN", {
@@ -39,30 +30,38 @@ function pdfDate(value: string): string {
   }).format(date);
 }
 
-/**
- * Use currency codes in the PDF so the amounts remain readable
- * with jsPDF's built-in fonts, including for Indian Rupees.
- */
-function pdfCurrency(amount: number, currency: string): string {
-  const safeAmount = Number.isFinite(amount) ? amount : 0;
-
+function money(value: number, currency: string): string {
+  const amount = Number.isFinite(value) ? value : 0;
   const formatted = new Intl.NumberFormat("en-IN", {
+    useGrouping: true,
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
-  }).format(safeAmount);
+  }).format(amount);
 
-  return `${currency} ${formatted}`;
+  // ASCII-only currency prefix avoids unsupported glyphs and stray characters
+  // when using jsPDF's built-in Helvetica font.
+  return currency === "INR" ? `Rs. ${formatted}` : `${currency} ${formatted}`;
 }
 
-function pdfLogoFormat(dataUrl: string): "PNG" | "JPEG" | null {
-  if (dataUrl.startsWith("data:image/png")) return "PNG";
-  if (
-    dataUrl.startsWith("data:image/jpeg") ||
-    dataUrl.startsWith("data:image/jpg")
-  ) {
-    return "JPEG";
+function addLogo(doc: jsPDF, dataUrl: string, x: number, y: number): boolean {
+  try {
+    if (dataUrl.startsWith("data:image/png")) {
+      doc.addImage(dataUrl, "PNG", x, y, 19, 19, undefined, "FAST");
+      return true;
+    }
+
+    if (
+      dataUrl.startsWith("data:image/jpeg") ||
+      dataUrl.startsWith("data:image/jpg")
+    ) {
+      doc.addImage(dataUrl, "JPEG", x, y, 19, 19, undefined, "FAST");
+      return true;
+    }
+  } catch {
+    // Unsupported or damaged image: continue generating the invoice.
   }
-  return null;
+
+  return false;
 }
 
 export function exportInvoiceJSON(invoice: Invoice): void {
@@ -88,18 +87,10 @@ export async function importJSONFile(file: File): Promise<unknown> {
     throw new Error("The JSON file must be smaller than 10 MB.");
   }
 
-  if (
-    file.type &&
-    file.type !== "application/json" &&
-    !file.name.toLowerCase().endsWith(".json")
-  ) {
-    throw new Error("Please select a JSON file.");
-  }
-
-  const contents = await file.text();
+  const content = await file.text();
 
   try {
-    return JSON.parse(contents) as unknown;
+    return JSON.parse(content) as unknown;
   } catch {
     throw new Error("This file contains invalid JSON.");
   }
@@ -113,191 +104,141 @@ export function exportInvoicePDF(invoice: Invoice): void {
     compress: true
   });
 
-  const pageWidth = 210;
-  const pageHeight = 297;
-  const margin = 16;
-  const contentWidth = pageWidth - margin * 2;
-  const rightEdge = pageWidth - margin;
+  const W = 210;
+  const H = 297;
+  const M = 16;
+  const R = W - M;
+  const CW = W - M * 2;
 
   const totals = calculateTotals(invoice);
+  const showDueDate = invoice.showDueDate !== false;
 
   const accent =
     invoice.template === "elegant"
-      ? [135, 98, 64]
+      ? [137, 102, 66]
       : invoice.template === "classic"
         ? [55, 65, 81]
         : [79, 70, 229];
 
   const dark = [31, 41, 55];
   const muted = [107, 114, 128];
-  const light = [245, 247, 250];
   const border = [226, 232, 240];
+  const pale = [245, 247, 250];
   const white = [255, 255, 255];
 
-  const showDueDate = invoice.showDueDate !== false;
+  let y = 19;
 
-  let y = 18;
-
-  function setTextStyle(
-    size: number,
-    color: number[],
-    weight: "normal" | "bold" = "normal"
-  ): void {
-    doc.setFont("helvetica", weight);
-    doc.setFontSize(size);
-    doc.setTextColor(color[0], color[1], color[2]);
-  }
-
-  function text(
+  function write(
     value: string,
     x: number,
-    yPosition: number,
+    yy: number,
     size = 9,
     color: number[] = dark,
-    weight: "normal" | "bold" = "normal",
-    align: "left" | "center" | "right" = "left"
+    bold = false,
+    align: "left" | "right" | "center" = "left"
   ): void {
-    setTextStyle(size, color, weight);
-    doc.text(value, x, yPosition, { align });
+    doc.setFont("helvetica", bold ? "bold" : "normal");
+    doc.setFontSize(size);
+    doc.setTextColor(color[0], color[1], color[2]);
+    doc.text(value, x, yy, { align, charSpace: 0 });
   }
 
-  function drawLine(yPosition: number): void {
+  function line(yy: number): void {
     doc.setDrawColor(border[0], border[1], border[2]);
     doc.setLineWidth(0.25);
-    doc.line(margin, yPosition, rightEdge, yPosition);
+    doc.line(M, yy, R, yy);
   }
 
-  function wrapped(
+  function wrap(
     value: string,
     x: number,
-    yPosition: number,
+    yy: number,
     maxWidth: number,
-    size = 9,
-    color: number[] = dark
+    size = 8,
+    color: number[] = muted
   ): number {
-    setTextStyle(size, color);
-
-    const lines = doc.splitTextToSize(value || " ", maxWidth) as string[];
-    doc.text(lines, x, yPosition);
-
-    return lines.length * (size * 0.42 + 1.2);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(size);
+    doc.setTextColor(color[0], color[1], color[2]);
+    const lines = doc.splitTextToSize(value, maxWidth) as string[];
+    doc.text(lines, x, yy, { charSpace: 0 });
+    return Math.max(1, lines.length) * 4;
   }
 
-  function ensureSpace(height: number): void {
-    if (y + height > pageHeight - 20) {
+  function checkSpace(height: number): void {
+    if (y + height > H - 19) {
       doc.addPage();
       y = 20;
     }
   }
 
-  function drawTableHeader(): void {
+  function tableHeading(): void {
     doc.setFillColor(accent[0], accent[1], accent[2]);
-    doc.rect(margin, y, contentWidth, 10, "F");
+    doc.rect(M, y, CW, 10, "F");
 
-    text("DESCRIPTION", margin + 3, y + 6.5, 7, white, "bold");
-    text("QTY / UNIT", 139, y + 6.5, 7, white, "bold", "right");
-    text("UNIT PRICE", 166, y + 6.5, 7, white, "bold", "right");
-    text("AMOUNT", rightEdge - 3, y + 6.5, 7, white, "bold", "right");
-
+    write("DESCRIPTION", M + 3, y + 6.4, 7, white, true);
+    write("QTY / UNIT", 137, y + 6.4, 7, white, true, "right");
+    write("UNIT PRICE", 165, y + 6.4, 7, white, true, "right");
+    write("AMOUNT", R - 3, y + 6.4, 7, white, true, "right");
     y += 13;
   }
 
-  // Top accent bar
+  // Accent stripe
   doc.setFillColor(accent[0], accent[1], accent[2]);
-  doc.rect(0, 0, pageWidth, 4, "F");
+  doc.rect(0, 0, W, 4, "F");
 
-  // Business logo. JPEG and PNG are supported by jsPDF's standard fonts.
-  let logoDrawn = false;
-  const logo = invoice.business.logo;
+  // Business identity and logo
+  const logoShown = invoice.business.logo
+    ? addLogo(doc, invoice.business.logo, M, y - 2)
+    : false;
 
-  if (logo) {
-    const format = pdfLogoFormat(logo);
-
-    if (format) {
-      try {
-        doc.addImage(logo, format, margin, y - 2, 20, 20, undefined, "FAST");
-        logoDrawn = true;
-      } catch {
-        // If an image cannot be embedded, keep the invoice usable.
-        logoDrawn = false;
-      }
-    }
-  }
-
-  const businessX = logoDrawn ? margin + 25 : margin;
-  const businessWidth = logoDrawn ? 100 : 110;
-
+  const bx = logoShown ? M + 24 : M;
   const businessName = invoice.business.name || "Your Business";
 
-  const businessNameLines = doc.splitTextToSize(
-    businessName,
-    businessWidth
-  ) as string[];
+  write(businessName, bx, y + 2, 14, accent, true);
 
-  text(businessNameLines[0] || businessName, businessX, y + 2, 15, accent, "bold");
+  let by = y + 8;
+  const businessWidth = 105;
 
-  let businessY = y + 8;
-
-  for (const lineText of businessNameLines.slice(1)) {
-    text(lineText, businessX, businessY, 12, accent, "bold");
-    businessY += 5;
-  }
-
-  const businessLines = [
+  for (const value of [
     invoice.business.address,
     invoice.business.email,
     invoice.business.phone,
     invoice.business.website
-  ].filter(Boolean);
-
-  for (const value of businessLines) {
-    businessY += wrapped(value, businessX, businessY, businessWidth, 8, muted) + 1;
+  ].filter(Boolean)) {
+    by += wrap(value, bx, by, businessWidth, 8, muted) + 1;
   }
 
-  text("INVOICE", rightEdge, y + 2, 21, dark, "bold", "right");
+  write("INVOICE", R, y + 2, 21, dark, true, "right");
+  write(invoice.invoiceNumber || "INV-0001", R, y + 9, 9, dark, true, "right");
 
-  text(
-    invoice.invoiceNumber || "INV-0001",
-    rightEdge,
-    y + 9,
-    9,
-    dark,
-    "bold",
-    "right"
-  );
+  y = Math.max(by, y + (logoShown ? 22 : 15)) + 8;
 
-  y = Math.max(businessY, y + 24) + 7;
-
-  // Invoice metadata panel
+  // Invoice information panel
   const metadataHeight = 27;
-
-  doc.setFillColor(light[0], light[1], light[2]);
-  doc.roundedRect(margin, y, contentWidth, metadataHeight, 2, 2, "F");
+  doc.setFillColor(pale[0], pale[1], pale[2]);
+  doc.roundedRect(M, y, CW, metadataHeight, 2, 2, "F");
 
   const metadata = [
-    { label: "INVOICE NUMBER", value: invoice.invoiceNumber || "—" },
-    { label: "ISSUED", value: pdfDate(invoice.issueDate) },
-    ...(showDueDate
-      ? [{ label: "DUE DATE", value: pdfDate(invoice.dueDate) }]
-      : [])
+    ["INVOICE NUMBER", invoice.invoiceNumber || "—"],
+    ["ISSUED", pdfDate(invoice.issueDate)],
+    ...(showDueDate ? [["DUE DATE", pdfDate(invoice.dueDate)]] : [])
   ];
 
-  const columnWidth = contentWidth / metadata.length;
+  const colW = CW / metadata.length;
 
-  metadata.forEach((item, index) => {
-    const x = margin + 5 + index * columnWidth;
-
-    text(item.label, x, y + 8, 7, muted, "bold");
-    text(item.value, x, y + 16, 9, dark, "bold");
+  metadata.forEach(([label, value], index) => {
+    const x = M + 5 + index * colW;
+    write(label, x, y + 8, 7, muted, true);
+    write(value, x, y + 16, 9, dark, true);
   });
 
   y += metadataHeight + 11;
 
-  // Client information
-  text("BILL TO", margin, y, 8, muted, "bold");
+  // Client details
+  write("BILL TO", M, y, 8, muted, true);
   y += 7;
-
-  text(invoice.client.name || "Client", margin, y, 11, dark, "bold");
+  write(invoice.client.name || "Client name", M, y, 11, dark, true);
   y += 6;
 
   for (const value of [
@@ -305,220 +246,137 @@ export function exportInvoicePDF(invoice: Invoice): void {
     invoice.client.email,
     invoice.client.taxId ? `Tax ID: ${invoice.client.taxId}` : ""
   ].filter(Boolean)) {
-    y += wrapped(value, margin, y, 115, 8, muted) + 1;
+    y += wrap(value, M, y, 120, 8, muted) + 1;
   }
 
   if (invoice.purchaseOrder) {
     y += 2;
-    text(`Purchase order: ${invoice.purchaseOrder}`, margin, y, 8, muted);
+    write(`Purchase order: ${invoice.purchaseOrder}`, M, y, 8, muted);
     y += 5;
   }
 
   y += 7;
+  tableHeading();
 
-  // Item table
-  drawTableHeader();
-
+  // Item rows
   for (const item of invoice.items) {
     const description = item.description || "Item";
-    const descriptionLines = doc.splitTextToSize(description, 88) as string[];
-    const unitText = `${item.quantity}${item.unit?.trim() ? ` ${item.unit.trim()}` : ""}`;
-    const rowHeight = Math.max(
-      10,
-      descriptionLines.length * 4.5 + (item.discount > 0 ? 9 : 5)
-    );
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    const descLines = doc.splitTextToSize(description, 78) as string[];
+    const rowHeight = Math.max(10, descLines.length * 4.2 + (item.discount > 0 ? 8 : 4));
 
-    ensureSpace(rowHeight + 2);
+    checkSpace(rowHeight + 2);
 
-    // Repeat the column heading when a row continues onto a new page.
-    if (y === 20) {
-      drawTableHeader();
-    }
+    if (y === 20) tableHeading();
 
-    text(descriptionLines[0] || description, margin + 3, y + 2, 8, dark);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(dark[0], dark[1], dark[2]);
+    doc.text(descLines, M + 3, y + 2, { charSpace: 0 });
 
-    if (descriptionLines.length > 1) {
-      setTextStyle(8, dark);
-      doc.text(descriptionLines.slice(1), margin + 3, y + 6.5);
-    }
-
-    text(unitText, 139, y + 2, 7, dark, "normal", "right");
-
-    text(
-      pdfCurrency(item.unitPrice, invoice.currency),
-      166,
-      y + 2,
-      7,
-      dark,
-      "normal",
-      "right"
-    );
-
-    text(
-      pdfCurrency(calculateItemTotal(item), invoice.currency),
-      rightEdge - 3,
-      y + 2,
-      7,
-      dark,
-      "bold",
-      "right"
-    );
+    const qty = `${item.quantity}${item.unit?.trim() ? ` ${item.unit.trim()}` : ""}`;
+    write(qty, 137, y + 2, 7, dark, false, "right");
+    write(money(item.unitPrice, invoice.currency), 165, y + 2, 7, dark, false, "right");
+    write(money(calculateItemTotal(item), invoice.currency), R - 3, y + 2, 7, dark, true, "right");
 
     if (item.discount > 0) {
-      text(`${item.discount}% discount`, margin + 3, y + 6.5, 7, muted);
+      write(`${item.discount}% discount`, M + 3, y + 6.5, 7, muted);
     }
 
     y += rowHeight;
-    drawLine(y);
+    line(y);
     y += 3;
   }
 
-  // Totals area with a consistent right-aligned amount column.
-  y += 4;
+  // Totals block: fixed geometry and right-aligned values.
+  y += 5;
 
-  const totalsWidth = 76;
-  const totalsLeft = rightEdge - totalsWidth;
-  const labelX = totalsLeft;
-  const valueX = rightEdge - 3;
+  const boxWidth = 76;
+  const boxLeft = R - boxWidth;
+  const labelX = boxLeft + 1;
+  const amountX = R - 4;
 
-  const totalRows: [string, number][] = [
+  const rows: Array<[string, number]> = [
     ["Subtotal", totals.subtotal]
   ];
 
-  if (totals.itemDiscount > 0) {
-    totalRows.push(["Item discounts", -totals.itemDiscount]);
-  }
+  if (totals.itemDiscount > 0) rows.push(["Item discounts", -totals.itemDiscount]);
+  if (totals.invoiceDiscount > 0) rows.push(["Invoice discount", -totals.invoiceDiscount]);
+  if (totals.tax > 0) rows.push([invoice.taxLabel || "Tax", totals.tax]);
+  if (totals.shipping > 0) rows.push(["Additional charges", totals.shipping]);
 
-  if (totals.invoiceDiscount > 0) {
-    totalRows.push(["Invoice discount", -totals.invoiceDiscount]);
-  }
-
-  if (totals.tax > 0) {
-    totalRows.push([invoice.taxLabel || "Tax", totals.tax]);
-  }
-
-  if (totals.shipping > 0) {
-    totalRows.push(["Additional charges", totals.shipping]);
-  }
-
-  for (const [label, amount] of totalRows) {
-    ensureSpace(8);
-
-    text(label, labelX, y, 8, muted);
-
-    text(
-      `${amount < 0 ? "-" : ""}${pdfCurrency(Math.abs(amount), invoice.currency)}`,
-      valueX,
+  for (const [label, amount] of rows) {
+    checkSpace(8);
+    write(label, labelX, y, 8, muted);
+    write(
+      `${amount < 0 ? "- " : ""}${money(Math.abs(amount), invoice.currency)}`,
+      amountX,
       y,
       8,
       dark,
-      "normal",
+      false,
       "right"
     );
-
     y += 7;
   }
 
-  ensureSpace(24);
+  checkSpace(25);
+
+  // Draw the total bar once, with padding around both the label and amount.
+  const barY = y - 4;
+  const barHeight = 13;
 
   doc.setFillColor(accent[0], accent[1], accent[2]);
-  doc.roundedRect(totalsLeft - 4, y - 3, totalsWidth + 4, 13, 2, 2, "F");
+  doc.roundedRect(boxLeft, barY, boxWidth, barHeight, 2, 2, "F");
 
-  text("TOTAL", labelX, y + 5, 9, white, "bold");
+  write("TOTAL", boxLeft + 4, barY + 8, 9, white, true);
+  write(money(totals.total, invoice.currency), R - 4, barY + 8, 9, white, true, "right");
 
-  text(
-    pdfCurrency(totals.total, invoice.currency),
-    valueX,
-    y + 5,
-    9,
-    white,
-    "bold",
-    "right"
-  );
-
-  y += 17;
+  y = barY + barHeight + 7;
 
   if (totals.amountPaid > 0) {
-    ensureSpace(8);
-
-    text("Amount paid", labelX, y, 8, muted);
-    text(
-      pdfCurrency(totals.amountPaid, invoice.currency),
-      valueX,
-      y,
-      8,
-      dark,
-      "normal",
-      "right"
-    );
-
+    checkSpace(8);
+    write("Amount paid", labelX, y, 8, muted);
+    write(money(totals.amountPaid, invoice.currency), amountX, y, 8, dark, false, "right");
     y += 7;
   }
 
-  ensureSpace(10);
-
-  text("BALANCE DUE", labelX, y, 8, accent, "bold");
-
-  text(
-    pdfCurrency(totals.balance, invoice.currency),
-    valueX,
-    y,
-    9,
-    accent,
-    "bold",
-    "right"
-  );
-
+  checkSpace(10);
+  write("BALANCE DUE", labelX, y, 8, accent, true);
+  write(money(totals.balance, invoice.currency), amountX, y, 9, accent, true, "right");
   y += 12;
 
-  // Notes and payment instructions
-  const noteSections = [
+  for (const [heading, value] of [
     ["PAYMENT INSTRUCTIONS", invoice.paymentInstructions],
     ["NOTES", invoice.notes]
-  ] as const;
+  ]) {
+    if (!value?.trim()) continue;
 
-  for (const [heading, value] of noteSections) {
-    if (!value.trim()) continue;
-
-    ensureSpace(18);
-
-    text(heading, margin, y, 7, muted, "bold");
+    checkSpace(18);
+    write(heading, M, y, 7, muted, true);
     y += 5;
-
-    y += wrapped(value, margin, y, contentWidth, 8, dark) + 5;
+    y += wrap(value, M, y, CW, 8, dark) + 5;
   }
 
   if (invoice.paymentTerms) {
-    ensureSpace(10);
-
-    text(`Payment terms: ${invoice.paymentTerms}`, margin, y, 8, muted);
-    y += 6;
+    checkSpace(10);
+    write(`Payment terms: ${invoice.paymentTerms}`, M, y, 8, muted);
+    y += 7;
   }
 
   if (invoice.footer) {
-    ensureSpace(12);
-
-    drawLine(y);
+    checkSpace(12);
+    line(y);
     y += 7;
-
-    wrapped(invoice.footer, margin, y, contentWidth, 8, muted);
+    wrap(invoice.footer, M, y, CW, 8, muted);
   }
 
-  // Footer and page numbers
   const pageCount = doc.getNumberOfPages();
 
   for (let page = 1; page <= pageCount; page++) {
     doc.setPage(page);
-
-    text(
-      `InvoiceLite  |  ${page} / ${pageCount}`,
-      pageWidth / 2,
-      pageHeight - 7,
-      7,
-      muted,
-      "normal",
-      "center"
-    );
+    write(`InvoiceLite  |  ${page} / ${pageCount}`, W / 2, H - 7, 7, muted, false, "center");
   }
 
   doc.save(`${safeFilename(invoice.invoiceNumber)}.pdf`);
