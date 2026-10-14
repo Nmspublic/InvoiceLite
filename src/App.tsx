@@ -2,33 +2,33 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ArrowLeft,
-  Check,
   Download,
-  FilePlus2,
   FileText,
   LayoutTemplate,
-  Menu,
-  MoreHorizontal,
   Printer,
   Settings as SettingsIcon,
   ShieldCheck,
-  X,
-  Copy,
-  Trash2,
 } from "lucide-react";
 
 import type {
   AppPage,
   AppSettings,
   Invoice,
-  InvoiceItem,
   InvoiceTemplate,
   StorageData,
 } from "./types";
 
 import { DEFAULT_SETTINGS } from "./types";
-import { createId, todayISO } from "./utils/formatting";
-import { clearStorage, readStorage, writeStorage } from "./utils/storage";
+import {
+  createId,
+  todayISO,
+  formatCurrency,
+} from "./utils/formatting";
+import {
+  clearStorage,
+  readStorage,
+  writeStorage,
+} from "./utils/storage";
 import {
   exportInvoiceJSON,
   exportInvoicePDF,
@@ -40,160 +40,147 @@ import InvoiceEditor from "./components/InvoiceEditor";
 import InvoicePreview from "./components/InvoicePreview";
 import Settings from "./components/Settings";
 import TemplatePicker from "./components/TemplatePicker";
-import Modal from "./components/Modal";
-import Toast from "./components/Toast";
-
-function createEmptyItem(): InvoiceItem {
-  return {
-    id: createId(),
-    description: "",
-    quantity: 1,
-    rate: 0,
-    taxRate: 0,
-  };
-}
 
 function createEmptyInvoice(
   settings: AppSettings,
-  template: InvoiceTemplate = "classic",
+  template: InvoiceTemplate,
 ): Invoice {
-  const now = todayISO();
+  const today = todayISO();
+  const invoiceNumber =
+    `${settings.invoicePrefix}${settings.nextInvoiceNumber}`;
 
   return {
     id: createId(),
-    invoiceNumber: `INV-${Date.now().toString().slice(-6)}`,
-    status: "draft",
-    issueDate: now,
-    dueDate: now,
+    version: 1,
+    invoiceNumber,
+    issueDate: today,
+    dueDate: today,
     currency: settings.currency,
-    template,
-    business: {
-      name: settings.businessName,
-      email: settings.businessEmail,
-      phone: settings.businessPhone,
-      address: settings.businessAddress,
-      taxId: settings.taxId,
-      logo: settings.logo,
-    },
+    paymentTerms: settings.paymentTerms,
+    purchaseOrder: "",
+    business: { ...settings.business },
     client: {
       name: "",
       email: "",
-      phone: "",
       address: "",
       taxId: "",
     },
-    items: [createEmptyItem()],
-    notes: "",
-    terms: "",
-    discountType: "amount",
-    discountValue: 0,
-    taxRate: 0,
+    items: [
+      {
+        id: createId(),
+        description: "",
+        quantity: 1,
+        unitPrice: 0,
+        discount: 0,
+      },
+    ],
+    discountType: "fixed",
+    invoiceDiscount: 0,
+    taxLabel: settings.taxLabel,
+    taxRate: settings.taxRate,
+    shipping: 0,
     amountPaid: 0,
+    notes: "",
+    paymentInstructions: "",
+    footer: "",
+    template,
+    status: "draft",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 }
 
-function normalizeInvoice(invoice: Invoice): Invoice {
-  const now = new Date().toISOString();
-
-  return {
-    ...invoice,
-    id: invoice.id || createId(),
-    invoiceNumber: invoice.invoiceNumber || `INV-${Date.now().toString().slice(-6)}`,
-    items:
-      Array.isArray(invoice.items) && invoice.items.length > 0
-        ? invoice.items
-        : [createEmptyItem()],
-    createdAt: invoice.createdAt || now,
-    updatedAt: now,
-  };
-}
-
 function App() {
-  const [storage, setStorage] = useState<StorageData>(() => readStorage());
+  const [storage, setStorage] = useState<StorageData>(() =>
+    readStorage(),
+  );
   const [page, setPage] = useState<AppPage>("dashboard");
-  const [currentInvoiceId, setCurrentInvoiceId] = useState<string | null>(null);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [toastMessage, setToastMessage] = useState("");
-  const [modal, setModal] = useState<{
-    title: string;
-    message: string;
-    confirmLabel?: string;
-    onConfirm: () => void;
-  } | null>(null);
+  const [currentInvoiceId, setCurrentInvoiceId] =
+    useState<string | null>(null);
+  const [selectedTemplate, setSelectedTemplate] =
+    useState<InvoiceTemplate>(
+      storage.settings.defaultTemplate,
+    );
+  const [notice, setNotice] = useState("");
 
   const settings = storage.settings ?? DEFAULT_SETTINGS;
 
   const currentInvoice =
-    storage.invoices.find((invoice) => invoice.id === currentInvoiceId) ?? null;
-
-  const notify = useCallback((message: string) => {
-    setToastMessage(message);
-  }, []);
+    storage.invoices.find(
+      (invoice) => invoice.id === currentInvoiceId,
+    ) ?? null;
 
   useEffect(() => {
     writeStorage(storage);
   }, [storage]);
 
   useEffect(() => {
-    if (!toastMessage) return;
+    if (!notice) return;
 
     const timeout = window.setTimeout(() => {
-      setToastMessage("");
-    }, 3000);
+      setNotice("");
+    }, 3500);
 
     return () => window.clearTimeout(timeout);
-  }, [toastMessage]);
+  }, [notice]);
 
-  const updateInvoice = useCallback(
-    (updatedInvoice: Invoice) => {
+  const notify = useCallback((message: string) => {
+    setNotice(message);
+  }, []);
+
+  const updateInvoice = useCallback((updated: Invoice) => {
+    setStorage((previous) => ({
+      ...previous,
+      invoices: previous.invoices.map((invoice) =>
+        invoice.id === updated.id
+          ? {
+              ...updated,
+              updatedAt: new Date().toISOString(),
+            }
+          : invoice,
+      ),
+    }));
+  }, []);
+
+  const updateSettings = useCallback(
+    (updatedSettings: AppSettings) => {
       setStorage((previous) => ({
         ...previous,
-        invoices: previous.invoices.map((invoice) =>
-          invoice.id === updatedInvoice.id
-            ? {
-                ...updatedInvoice,
-                updatedAt: new Date().toISOString(),
-              }
-            : invoice,
-        ),
+        settings: updatedSettings,
       }));
     },
     [],
   );
 
-  const updateSettings = useCallback((updatedSettings: AppSettings) => {
-    setStorage((previous) => ({
-      ...previous,
-      settings: updatedSettings,
-    }));
+  const backToDashboard = useCallback(() => {
+    setPage("dashboard");
+    setCurrentInvoiceId(null);
   }, []);
 
   const createInvoice = useCallback(
-    (template: InvoiceTemplate = "classic") => {
+    (template: InvoiceTemplate = settings.defaultTemplate) => {
       const invoice = createEmptyInvoice(settings, template);
 
       setStorage((previous) => ({
         ...previous,
         invoices: [invoice, ...previous.invoices],
+        settings: {
+          ...previous.settings,
+          nextInvoiceNumber:
+            previous.settings.nextInvoiceNumber + 1,
+        },
       }));
 
       setCurrentInvoiceId(invoice.id);
       setPage("editor");
-      notify("New invoice created.");
+      notify("Invoice created.");
     },
     [settings, notify],
   );
 
-  const openInvoice = useCallback((invoiceId: string) => {
-    setCurrentInvoiceId(invoiceId);
+  const openInvoice = useCallback((id: string) => {
+    setCurrentInvoiceId(id);
     setPage("editor");
-  }, []);
-
-  const backToDashboard = useCallback(() => {
-    setPage("dashboard");
-    setCurrentInvoiceId(null);
   }, []);
 
   const duplicateInvoice = useCallback(
@@ -201,7 +188,8 @@ function App() {
       const duplicate: Invoice = {
         ...invoice,
         id: createId(),
-        invoiceNumber: `INV-${Date.now().toString().slice(-6)}`,
+        invoiceNumber:
+          `${settings.invoicePrefix}${settings.nextInvoiceNumber}`,
         status: "draft",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -214,38 +202,41 @@ function App() {
       setStorage((previous) => ({
         ...previous,
         invoices: [duplicate, ...previous.invoices],
+        settings: {
+          ...previous.settings,
+          nextInvoiceNumber:
+            previous.settings.nextInvoiceNumber + 1,
+        },
       }));
 
       setCurrentInvoiceId(duplicate.id);
       setPage("editor");
       notify("Invoice duplicated.");
     },
-    [notify],
+    [settings.invoicePrefix, settings.nextInvoiceNumber, notify],
   );
 
   const deleteInvoice = useCallback(
     (invoice: Invoice) => {
-      setModal({
-        title: "Delete invoice?",
-        message: `Are you sure you want to delete ${invoice.invoiceNumber}? This cannot be undone.`,
-        confirmLabel: "Delete invoice",
-        onConfirm: () => {
-          setStorage((previous) => ({
-            ...previous,
-            invoices: previous.invoices.filter(
-              (item) => item.id !== invoice.id,
-            ),
-          }));
+      const confirmed = window.confirm(
+        `Delete ${invoice.invoiceNumber}? This cannot be undone.`,
+      );
 
-          if (currentInvoiceId === invoice.id) {
-            setCurrentInvoiceId(null);
-            setPage("dashboard");
-          }
+      if (!confirmed) return;
 
-          setModal(null);
-          notify("Invoice deleted.");
-        },
-      });
+      setStorage((previous) => ({
+        ...previous,
+        invoices: previous.invoices.filter(
+          (item) => item.id !== invoice.id,
+        ),
+      }));
+
+      if (currentInvoiceId === invoice.id) {
+        setCurrentInvoiceId(null);
+        setPage("dashboard");
+      }
+
+      notify("Invoice deleted.");
     },
     [currentInvoiceId, notify],
   );
@@ -254,86 +245,102 @@ function App() {
     (invoice: Invoice) => {
       try {
         exportInvoiceJSON(invoice);
-        notify("Invoice JSON exported.");
+        notify("Invoice JSON downloaded.");
       } catch {
-        notify("Could not export the invoice.");
+        notify("Could not export this invoice.");
       }
     },
     [notify],
   );
 
-  const handleDownloadPDF = useCallback(async () => {
+  const handleDownloadPDF = useCallback(() => {
     if (!currentInvoice) return;
 
-    const errors = validateInvoice(currentInvoice);
+    const result = validateInvoice(currentInvoice);
 
-    if (errors.length > 0) {
-      setModal({
-        title: "Invoice needs attention",
-        message: errors.join("\n"),
-        confirmLabel: "Got it",
-        onConfirm: () => setModal(null),
-      });
+    if (!result.valid) {
+      window.alert(
+        `Please correct these issues before exporting:\n\n${result.errors.join("\n")}`,
+      );
       return;
     }
 
     try {
-      await exportInvoicePDF(currentInvoice);
-      notify("PDF export started.");
+      exportInvoicePDF(currentInvoice);
+      notify("PDF download started.");
     } catch {
-      notify("Could not generate the PDF. Try printing instead.");
+      notify("PDF export failed. Please try printing instead.");
     }
   }, [currentInvoice, notify]);
 
-  const handleImportData = useCallback((data: unknown) => {
-    if (!data || typeof data !== "object") {
-      notify("Invalid backup file.");
-      return;
-    }
+  const handleImport = useCallback(
+    (value: unknown) => {
+      if (!value || typeof value !== "object") {
+        notify("This backup file is invalid.");
+        return;
+      }
 
-    const imported = data as Partial<StorageData>;
+      const imported = value as Partial<StorageData>;
 
-    if (!Array.isArray(imported.invoices)) {
-      notify("The backup does not contain a valid invoice list.");
-      return;
-    }
+      if (
+        imported.version !== 1 ||
+        !Array.isArray(imported.invoices) ||
+        !imported.settings ||
+        typeof imported.settings !== "object"
+      ) {
+        notify("This is not a supported InvoiceLite backup.");
+        return;
+      }
 
-    const importedInvoices = imported.invoices.map((invoice) =>
-      normalizeInvoice(invoice as Invoice),
+      const incomingSettings = imported.settings as AppSettings;
+
+      if (
+        !incomingSettings.business ||
+        typeof incomingSettings.currency !== "string" ||
+        typeof incomingSettings.nextInvoiceNumber !== "number"
+      ) {
+        notify("The backup settings are incomplete.");
+        return;
+      }
+
+      setStorage({
+        version: 1,
+        invoices: imported.invoices as Invoice[],
+        settings: {
+          ...DEFAULT_SETTINGS,
+          ...incomingSettings,
+          business: {
+            ...DEFAULT_SETTINGS.business,
+            ...incomingSettings.business,
+          },
+        },
+      });
+
+      setCurrentInvoiceId(null);
+      setPage("dashboard");
+      notify("Backup imported.");
+    },
+    [notify],
+  );
+
+  const handleClear = useCallback(() => {
+    const confirmed = window.confirm(
+      "Delete all invoices and settings stored in this browser? Export a backup first if you need to keep your data.",
     );
 
-    setStorage((previous) => ({
-      ...previous,
-      invoices: importedInvoices,
-      settings: {
-        ...previous.settings,
-        ...(imported.settings ?? {}),
-      },
-    }));
+    if (!confirmed) return;
 
-    setPage("dashboard");
-    setCurrentInvoiceId(null);
-    notify("Backup imported.");
-  }, [notify]);
+    clearStorage();
 
-  const resetAllData = useCallback(() => {
-    setModal({
-      title: "Delete all local data?",
-      message:
-        "This permanently removes all saved invoices and settings from this browser. Export a backup first if you need it.",
-      confirmLabel: "Delete everything",
-      onConfirm: () => {
-        clearStorage();
-        setStorage({
-          invoices: [],
-          settings: DEFAULT_SETTINGS,
-        });
-        setPage("dashboard");
-        setCurrentInvoiceId(null);
-        setModal(null);
-        notify("All local data has been deleted.");
-      },
+    setStorage({
+      version: 1,
+      invoices: [],
+      settings: { ...DEFAULT_SETTINGS, business: { ...DEFAULT_SETTINGS.business } },
     });
+
+    setCurrentInvoiceId(null);
+    setPage("dashboard");
+    notify("Local data cleared.");
   }, [notify]);
 
   const pageTitle =
@@ -348,11 +355,11 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="no-print sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
           <button
             type="button"
             onClick={backToDashboard}
-            className="flex items-center gap-3 rounded-lg text-left"
+            className="flex items-center gap-3 text-left"
             aria-label="InvoiceLite home"
           >
             <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-white">
@@ -368,7 +375,7 @@ function App() {
             </span>
           </button>
 
-          <nav className="hidden items-center gap-1 md:flex">
+          <nav className="flex items-center gap-1">
             <button
               type="button"
               onClick={backToDashboard}
@@ -378,20 +385,19 @@ function App() {
                   : "text-slate-600 hover:bg-slate-100"
               }`}
             >
-              <FileText className="mr-2 inline" size={16} />
               Invoices
             </button>
 
             <button
               type="button"
               onClick={() => setPage("templates")}
-              className={`rounded-lg px-3 py-2 text-sm font-medium ${
+              className={`hidden rounded-lg px-3 py-2 text-sm font-medium sm:inline-flex ${
                 page === "templates"
                   ? "bg-slate-100 text-slate-900"
                   : "text-slate-600 hover:bg-slate-100"
               }`}
             >
-              <LayoutTemplate className="mr-2 inline" size={16} />
+              <LayoutTemplate className="mr-2" size={16} />
               Templates
             </button>
 
@@ -405,81 +411,10 @@ function App() {
               }`}
             >
               <SettingsIcon className="mr-2 inline" size={16} />
-              Settings
+              <span className="hidden sm:inline">Settings</span>
             </button>
           </nav>
-
-          <div className="flex items-center gap-2">
-            {page === "editor" && currentInvoice && (
-              <>
-                <span className="hidden items-center gap-1 text-xs text-emerald-700 sm:flex">
-                  <Check size={14} />
-                  Saved locally
-                </span>
-
-                <button
-                  type="button"
-                  onClick={handleDownloadPDF}
-                  className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-                >
-                  <Download size={16} />
-                  <span className="hidden sm:inline">Export PDF</span>
-                  <span className="sm:hidden">PDF</span>
-                </button>
-              </>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen((open) => !open)}
-              className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 md:hidden"
-              aria-label="Toggle navigation"
-              aria-expanded={mobileMenuOpen}
-            >
-              {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
-            </button>
-          </div>
         </div>
-
-        {mobileMenuOpen && (
-          <div className="border-t border-slate-200 bg-white p-3 md:hidden">
-            <button
-              type="button"
-              onClick={() => {
-                backToDashboard();
-                setMobileMenuOpen(false);
-              }}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-3 text-left text-sm hover:bg-slate-100"
-            >
-              <FileText size={16} />
-              Invoices
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setPage("templates");
-                setMobileMenuOpen(false);
-              }}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-3 text-left text-sm hover:bg-slate-100"
-            >
-              <LayoutTemplate size={16} />
-              Templates
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setPage("settings");
-                setMobileMenuOpen(false);
-              }}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-3 text-left text-sm hover:bg-slate-100"
-            >
-              <SettingsIcon size={16} />
-              Settings
-            </button>
-          </div>
-        )}
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -504,22 +439,22 @@ function App() {
               {page === "dashboard" &&
                 "Create, manage, and export your invoices."}
               {page === "editor" &&
-                "Edit invoice details and preview the final document."}
+                "Edit invoice details and preview your document."}
               {page === "templates" &&
-                "Choose a clean design for your next invoice."}
+                "Choose a design for your next invoice."}
               {page === "settings" &&
-                "Manage your business details and local data."}
+                "Manage your business defaults and local data."}
             </p>
           </div>
 
-          {page === "dashboard" && (
+          {page === "editor" && currentInvoice && (
             <button
               type="button"
-              onClick={() => setPage("templates")}
+              onClick={handleDownloadPDF}
               className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700"
             >
-              <FilePlus2 size={17} />
-              New invoice
+              <Download size={16} />
+              Export PDF
             </button>
           )}
         </div>
@@ -528,7 +463,7 @@ function App() {
           <Dashboard
             invoices={storage.invoices}
             settings={settings}
-            onCreateInvoice={() => createInvoice()}
+            onCreateInvoice={() => setPage("templates")}
             onOpenInvoice={openInvoice}
             onDuplicateInvoice={duplicateInvoice}
             onDeleteInvoice={deleteInvoice}
@@ -536,17 +471,42 @@ function App() {
           />
         )}
 
+        {page === "templates" && (
+          <section className="space-y-6">
+            <TemplatePicker
+              value={selectedTemplate}
+              onChange={setSelectedTemplate}
+            />
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => createInvoice(selectedTemplate)}
+                className="rounded-lg bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700"
+              >
+                Create invoice with this template
+              </button>
+
+              <button
+                type="button"
+                onClick={backToDashboard}
+                className="rounded-lg border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+        )}
+
         {page === "editor" && currentInvoice && (
-          <div className="grid items-start gap-8 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.95fr)]">
-            <div className="no-print min-w-0">
+          <div className="grid items-start gap-8 xl:grid-cols-2">
+            <div className="no-print min-w-0 space-y-5">
               <InvoiceEditor
                 invoice={currentInvoice}
-                settings={settings}
                 onChange={updateInvoice}
-                onSettingsChange={updateSettings}
               />
 
-              <div className="mt-6 flex flex-wrap gap-3">
+              <div className="flex flex-wrap gap-3">
                 <button
                   type="button"
                   onClick={handleDownloadPDF}
@@ -562,7 +522,7 @@ function App() {
                   className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                 >
                   <Printer size={16} />
-                  Print invoice
+                  Print
                 </button>
 
                 <button
@@ -577,24 +537,22 @@ function App() {
                 <button
                   type="button"
                   onClick={() => duplicateInvoice(currentInvoice)}
-                  className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                 >
-                  <Copy size={16} />
                   Duplicate
                 </button>
 
                 <button
                   type="button"
                   onClick={() => deleteInvoice(currentInvoice)}
-                  className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50"
+                  className="rounded-lg border border-red-200 bg-white px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50"
                 >
-                  <Trash2 size={16} />
                   Delete
                 </button>
               </div>
             </div>
 
-            <div className="min-w-0">
+            <section className="min-w-0">
               <div className="no-print mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-700">
                   Live preview
@@ -604,57 +562,27 @@ function App() {
                 </span>
               </div>
 
-              <InvoicePreview invoice={currentInvoice} settings={settings} />
-            </div>
+              <InvoicePreview invoice={currentInvoice} />
+            </section>
           </div>
-        )}
-
-        {page === "templates" && (
-          <TemplatePicker
-            onSelect={(template) => createInvoice(template)}
-            onCancel={backToDashboard}
-          />
         )}
 
         {page === "settings" && (
           <Settings
             settings={settings}
-            invoices={storage.invoices}
+            data={storage}
             onChange={updateSettings}
-            onImport={handleImportData}
-            onReset={resetAllData}
-            onExportAll={() => {
-              try {
-                const backup = {
-                  version: 1,
-                  exportedAt: new Date().toISOString(),
-                  invoices: storage.invoices,
-                  settings: storage.settings,
-                };
-
-                const blob = new Blob(
-                  [JSON.stringify(backup, null, 2)],
-                  { type: "application/json" },
-                );
-
-                const url = URL.createObjectURL(blob);
-                const anchor = document.createElement("a");
-                anchor.href = url;
-                anchor.download = "invoicelite-backup.json";
-                anchor.click();
-                URL.revokeObjectURL(url);
-                notify("Backup exported.");
-              } catch {
-                notify("Could not export the backup.");
-              }
-            }}
+            onImport={handleImport}
+            onClear={handleClear}
           />
         )}
       </main>
 
       <footer className="no-print border-t border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-5 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
-          <p>© {new Date().getFullYear()} InvoiceLite. Open-source invoicing.</p>
+          <p>
+            © {new Date().getFullYear()} InvoiceLite. Open-source invoicing.
+          </p>
           <p className="flex items-center gap-2">
             <ShieldCheck size={14} />
             Your data stays in this browser.
@@ -662,17 +590,15 @@ function App() {
         </div>
       </footer>
 
-      {modal && (
-        <Modal
-          title={modal.title}
-          message={modal.message}
-          confirmLabel={modal.confirmLabel}
-          onConfirm={modal.onConfirm}
-          onClose={() => setModal(null)}
-        />
+      {notice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="no-print fixed bottom-5 right-5 z-50 max-w-sm rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-lg"
+        >
+          {notice}
+        </div>
       )}
-
-      <Toast message={toastMessage} />
     </div>
   );
 }
