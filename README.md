@@ -1,6 +1,6 @@
 
 # InvoiceLite
-
+Made By @Nmspublic [NextMaze Studi] (© 2026 NextMaze Studio. All rights reserved.)
 A clean, lightweight, open-source invoice generator built with React, TypeScript, Vite, and Tailwind CSS.
 
 Create professional invoices, manage clients, calculate totals, preview your documents, and export invoices without creating an account or sending your data to a server.
