@@ -1,3 +1,4 @@
+
 export type CurrencyCode =
   | "INR"
   | "USD"
@@ -10,9 +11,7 @@ export type CurrencyCode =
   | "JPY";
 
 export type InvoiceStatus = "draft" | "sent" | "paid";
-
 export type InvoiceTemplate = "classic" | "modern" | "elegant";
-
 export type AppPage = "dashboard" | "editor" | "templates" | "settings";
 
 export interface BusinessDetails {
@@ -37,6 +36,8 @@ export interface InvoiceItem {
   quantity: number;
   unitPrice: number;
   discount: number;
+  /** Optional measurement unit, for example sq ft, kg, or hours. */
+  unit?: string;
 }
 
 export interface Invoice {
@@ -45,6 +46,8 @@ export interface Invoice {
   invoiceNumber: string;
   issueDate: string;
   dueDate: string;
+  /** Existing invoices show the due date unless explicitly turned off. */
+  showDueDate?: boolean;
   currency: CurrencyCode;
   paymentTerms: string;
   purchaseOrder: string;
