@@ -1,18 +1,10 @@
-import { defineConfig } from "vitest/config";
+
+import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  base: process.env.GITHUB_ACTIONS
-    ? "/invoicelite/"
+  base: process.env.GITHUB_ACTIONS === "true"
+    ? `/${process.env.GITHUB_REPOSITORY?.split("/")[1] ?? ""}/`
     : "/",
-  build: {
-    outDir: "dist",
-    sourcemap: false,
-    emptyOutDir: true
-  },
-  test: {
-    environment: "jsdom",
-    setupFiles: "./src/test/setup.ts"
-  }
 });
